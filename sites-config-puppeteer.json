@@ -1,0 +1,169 @@
+{
+  "degewo": {
+    "name": "DEGEWO",
+    "enabled": true,
+    "type": "css",
+    "priority": 1,
+    "baseUrl": "https://www.degewo.de/immosuche",
+    "pagination": "?tx_openimmo_immobilie%5Bpage%5D={page}&tx_openimmo_immobilie%5Bsearch%5D=paginate",
+    "pageSize": 10,
+    "delayMs": 1000,
+    "maxPages": 20,
+    "itemSelector": ".article-list__item",
+    "fields": {
+      "title": {"css": ".article__title"},
+      "rooms": {"css": ".article__properties-item", "regex": "(\\d+)\\s*Zimmer", "transform": "int"},
+      "size": {"css": ".article__properties-item", "regex": "(\\d+[.,]\\d+)\\s*m²", "transform": "floatDE"},
+      "price": {"css": ".article__price-tag .price", "regex": "([\\d.,]+)\\s*€", "transform": "priceDE"},
+      "district": {"css": ".article__meta", "regex": "\\|\\s*([^\\n]+)", "transform": "trim"},
+      "address": {"css": ".article__meta", "regex": "^([^|]+)", "transform": "trim"},
+      "link": {"css": "a[href*='/immosuche/details/']", "attr": "href", "transform": "abs"}
+    }
+  },
+  "gewobag": {
+    "name": "GEWOBAG",
+    "enabled": true,
+    "type": "css",
+    "usePuppeteer": true,
+    "priority": 2,
+    "baseUrl": "https://www.gewobag.de/fuer-mietinteressentinnen/suche/wohnung/?gesamtmiete_von&gesamtmiete_bis&gesamtflaeche_von&gesamtflaeche_bis&zimmer_von&zimmer_bis&sort-by",
+    "pagination": "&paged={page}",
+    "stopOn404": true,
+    "delayMs": 1500,
+    "maxPages": 10,
+    "itemSelector": "article.angebot-big-box",
+    "fields": {
+      "title": {"css": "h3.angebot-title"},
+      "rooms": {"css": "tr.angebot-area td", "regex": "(\\d+)\\s+Zimmer", "transform": "int"},
+      "size": {"css": "tr.angebot-area td", "regex": "(\\d+[.,]?\\d*)\\s*m²", "transform": "floatDE"},
+      "price": {"css": "tr.angebot-kosten td", "regex": "ab\\s*([\\d.,]+)", "transform": "priceDE"},
+      "district": {"css": "tr.angebot-region td", "transform": "trim"},
+      "address": {"css": "tr.angebot-address address", "transform": "trim"},
+      "link": {"css": ".angebot-footer a", "attr": "href", "transform": "abs"}
+    }
+  },
+  "howoge": {
+    "name": "HOWOGE",
+    "enabled": true,
+    "type": "howoge",
+    "priority": 3,
+    "baseUrl": "https://www.howoge.de/?type=999&tx_howrealestate_json_list[action]=immoList",
+    "delayMs": 300,
+    "maxPages": 1,
+    "limit": 200,
+    "maxProjects": 20
+  },
+  "gesobau": {
+    "name": "Gesobau",
+    "enabled": true,
+    "type": "api",
+    "priority": 4,
+    "baseUrl": "https://www.gesobau.de/mieten/wohnungssuche/?resultsPerPage=10000&resultsPage=0&resultAsJSON=1&befilter%5B0%5D=kanal_stringM%3ABestand&befilter%5B1%5D=nutzungsart_stringS%3AWOHNEN",
+    "delayMs": 1000,
+    "maxPages": 1
+  },
+  "stadtundland": {
+    "name": "Stadt und Land",
+    "enabled": true,
+    "type": "api",
+    "priority": 5,
+    "baseUrl": "https://d2396ha8oiavw0.cloudfront.net/sul-main/immoSearch",
+    "method": "POST",
+    "body": {
+      "page": 0,
+      "size": 200,
+      "sort": {"field": "createdAt", "order": "desc"},
+      "filters": {"objectType": ["WOHNUNG"], "marketingType": ["MIETE"], "city": ["Berlin"]}
+    },
+    "delayMs": 1000,
+    "maxPages": 1
+  },
+  "wbm": {
+    "name": "WBM",
+    "enabled": true,
+    "type": "css",
+    "priority": 6,
+    "baseUrl": "https://www.wbm.de/wohnungen-berlin/angebote/",
+    "pagination": "?page={page}",
+    "delayMs": 1200,
+    "maxPages": 10,
+    "itemSelector": ".openimmo-search-list-item",
+    "fields": {
+      "title": {"css": ".imageTitle"},
+      "rooms": {"css": ".main-property-rooms", "transform": "int"},
+      "size": {"css": ".main-property-size", "regex": "([\\d.,]+)", "transform": "floatDE"},
+      "price": {"css": ".main-property-rent", "regex": "([\\d.,]+)", "transform": "priceDE"},
+      "district": {"css": ".imgWrap .area", "transform": "trim"},
+      "address": {"css": ".address", "transform": "trim"},
+      "link": {"css": "a[href*='/wohnungen-berlin/angebote/details/']", "attr": "href", "transform": "abs"}
+    }
+  },
+  "berlinovo": {
+    "name": "Berlinovo",
+    "enabled": true,
+    "type": "berlinovo",
+    "priority": 7,
+    "baseUrl": "https://www.berlinovo.de/de/wohnungen/suche",
+    "pagination": "?page={pageIndex}",
+    "pageIndexStartsAt": 0,
+    "delayMs": 1500,
+    "maxPages": 10,
+    "itemSelector": "article.node--type-apartment",
+    "fields": {
+      "title": {"css": ".field--name-title a", "transform": "trim"},
+      "rooms": {"css": ".field--name-field-rooms .field__item", "attr": "content", "transform": "floatDE"},
+      "size": {"css": ".field--name-field-net-area .field__item", "attr": "content", "transform": "floatDE"},
+      "price": {"css": ".field--name-field-total-rent .field__item", "attr": "content", "transform": "priceDE"},
+      "district": {"css": ".field--name-field-location .locality", "transform": "trim"},
+      "address": {"css": ".field--name-field-location .field__item", "regex": "^([^\\n]+)\\n(\\d{5})\\s+(\\S.+)$", "transform": "trim"},
+      "link": {"css": ".field--name-title a", "attr": "href", "transform": "abs"}
+    }
+  },
+  "deutschewohnen": {
+    "name": "Deutsche Wohnen",
+    "enabled": true,
+    "type": "api-offset",
+    "priority": 8,
+    "baseUrl": "https://www.deutsche-wohnen.com/api/deuwo-real-estate/list?city=Berlin&immoType=wohnung&rentType=miete&limit=15",
+    "limit": 15,
+    "delayMs": 800
+  },
+  "vonovia": {
+    "name": "Vonovia",
+    "enabled": true,
+    "type": "api-offset",
+    "priority": 9,
+    "baseUrl": "https://www.vonovia.de/api/real-estate/list?city=Berlin&immoType=wohnung&rentType=miete&limit=15",
+    "limit": 15,
+    "delayMs": 800
+  },
+  "akelius": {
+    "name": "Akelius",
+    "enabled": false,
+    "type": "css",
+    "priority": 10,
+    "baseUrl": "https://www.akelius.de/de/wohnungen",
+    "pagination": "?page={page}",
+    "delayMs": 1500,
+    "maxPages": 5,
+    "itemSelector": "article, .apartment, .property",
+    "fields": {
+      "title": {"css": "h2,h3"},
+      "rooms": {"css": "body", "regex": "(\\d+[.,]?\\d*)\\s*(Zimmer|Zi\\.)", "transform": "floatDE"},
+      "size": {"css": "body", "regex": "(\\d+[.,]?\\d*)\\s*m²", "transform": "floatDE"},
+      "price": {"css": "body", "regex": "([\\d.,]+)\\s*€", "transform": "priceDE"},
+      "link": {"css": "a[href]", "attr": "href", "transform": "abs"}
+    }
+  },
+  "inberlinwohnen": {
+    "name": "inberlinwohnen.de",
+    "enabled": true,
+    "type": "inberlin",
+    "usePuppeteer": true,
+    "priority": 0,
+    "baseUrl": "https://www.inberlinwohnen.de/wohnungsfinder/",
+    "delayMs": 1500,
+    "maxPages": 25,
+    "pageSize": 10
+  }
+}
