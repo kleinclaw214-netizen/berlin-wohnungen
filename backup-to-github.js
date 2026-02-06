@@ -12,9 +12,9 @@ const path = require('path');
 const REPO_ROOT = path.resolve(__dirname);
 const GIT = 'git';
 
-// Whitelist of files to backup (relative to repo root)
+// Whitelist of files/patterns to backup (relative to repo root)
 // Only personal assistant files, no scraper scripts.
-const BACKUP_FILES = [
+const BACKUP_PATTERNS = [
   'AGENTS.md',
   'SOUL.md',
   'USER.md',
@@ -22,8 +22,45 @@ const BACKUP_FILES = [
   'IDENTITY.md',
   'HEARTBEAT.md',
   'MEMORY.md',
+  'RESTORE.md',
   'backup-to-github.js',
+  'memory/*.md',
 ];
+
+// Simple glob matching (supports * in filename part only, no subdirectories beyond one level)
+function expandGlobs(patterns) {
+  const files = [];
+  for (const pattern of patterns) {
+    if (!pattern.includes('*')) {
+      // literal file
+      if (fs.existsSync(path.join(REPO_ROOT, pattern))) {
+        files.push(pattern);
+      }
+      continue;
+    }
+    // pattern like 'memory/*.md'
+    const dir = path.dirname(pattern);
+    const basePattern = path.basename(pattern);
+    let dirPath = REPO_ROOT;
+    if (dir !== '.') {
+      dirPath = path.join(REPO_ROOT, dir);
+      if (!fs.existsSync(dirPath)) continue;
+    }
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    for (const ent of entries) {
+      if (!ent.isFile()) continue;
+      const name = ent.name;
+      // simple wildcard matching: * matches any sequence
+      const regex = new RegExp('^' + basePattern.replace(/\*/g, '.*') + '$');
+      if (regex.test(name)) {
+        const relPath = dir === '.' ? name : path.join(dir, name);
+        files.push(relPath);
+      }
+    }
+  }
+  // deduplicate
+  return [...new Set(files)];
+}
 
 function run(cmd, options = {}) {
   console.log(`$ ${cmd}`);
@@ -62,10 +99,17 @@ function main() {
     console.warn('⚠️  Could not pull (network or conflicts), continuing with local state.');
   }
 
+  // Expand glob patterns to actual file list
+  const whitelistFiles = expandGlobs(BACKUP_PATTERNS);
+  if (whitelistFiles.length === 0) {
+    console.log('⚠️  No whitelisted files exist. Backup skipped.');
+    return;
+  }
+
   // Check if there are any changes in whitelisted files
   const status = run(`${GIT} status --porcelain`);
-  const changedFiles = status.split('\n').filter(line => line.trim()).map(line => line.slice(3));
-  const whitelistChanged = changedFiles.filter(f => BACKUP_FILES.includes(f));
+  const changedFiles = status.split('\n').filter(line => line.trim()).map(line => line.slice(2));
+  const whitelistChanged = changedFiles.filter(f => whitelistFiles.includes(f));
   
   if (whitelistChanged.length === 0) {
     console.log('✅ No changes in whitelisted files. Backup skipped.');
