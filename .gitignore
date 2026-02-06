@@ -1,0 +1,39 @@
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# OpenClaw internal
+.openclaw/
+.gateway/
+.devices/
+memory/*.md
+!memory/README.md
+MEMORY.md
+
+# Scraper results & state
+wohnungen-results*.json
+wohnungen-seen.json
+/tmp/
+*.log
+*.bak
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+*.env.local
+.env.*.local
+
+# Backup/restored files
+restored/
+recovered/
+
+# Puppeteer
+.local-*/
+
+# Test files
+test-*.js
+extract-*.js

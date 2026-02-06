@@ -1,0 +1,54 @@
+{
+  "profiles": {
+    "default": {
+      "name": "Standard-Suche",
+      "description": "Allgemeine Wohnungssuche in Berlin",
+      "enabled": false,
+      "criteria": {
+        "maxPrice": 800,
+        "minSize": 30,
+        "minRooms": 1,
+        "maxRooms": 4,
+        "excludeDistricts": [],
+        "includeDistricts": []
+      }
+    },
+    "reham": {
+      "name": "Reham's Suche",
+      "description": "3+ Zimmer, max 1100€",
+      "enabled": true,
+      "criteria": {
+        "maxPrice": 1100,
+        "minRooms": 3
+      }
+    },
+    "budget": {
+      "name": "Budget-Suche",
+      "description": "Günstige Wohnungen unter 500€",
+      "enabled": false,
+      "criteria": {
+        "maxPrice": 500,
+        "minSize": 25,
+        "minRooms": 1,
+        "maxRooms": 3
+      }
+    },
+    "family": {
+      "name": "Familien-Wohnung",
+      "description": "3+ Zimmer für Familien",
+      "enabled": false,
+      "criteria": {
+        "minRooms": 3,
+        "minSize": 70,
+        "maxPrice": 1200,
+        "excludeDistricts": []
+      }
+    }
+  },
+  "global": {
+    "notificationEmail": "reham.iesa@outlook.de",
+    "notificationTelegram": true,
+    "checkIntervalHours": 1,
+    "maxResultsPerNotification": 5
+  }
+}
