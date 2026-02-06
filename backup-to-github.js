@@ -27,6 +27,7 @@ const BACKUP_FILES = [
   'TOOLS.md',
   'IDENTITY.md',
   'HEARTBEAT.md',
+  'MEMORY.md',
   '.gitignore',
   'backup-to-github.js',
 ];
