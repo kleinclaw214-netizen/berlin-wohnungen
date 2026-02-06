@@ -13,14 +13,8 @@ const REPO_ROOT = path.resolve(__dirname);
 const GIT = 'git';
 
 // Whitelist of files to backup (relative to repo root)
+// Only personal assistant files, no scraper scripts.
 const BACKUP_FILES = [
-  'universal-scraper-v2.js',
-  'wohnungen-monitor-v2.js',
-  'sites-config.json',
-  'sites-config-puppeteer.json',
-  'filter-criteria.json',
-  'wohnungen-runner.js',
-  'README.md',
   'AGENTS.md',
   'SOUL.md',
   'USER.md',
@@ -28,7 +22,6 @@ const BACKUP_FILES = [
   'IDENTITY.md',
   'HEARTBEAT.md',
   'MEMORY.md',
-  '.gitignore',
   'backup-to-github.js',
 ];
 
