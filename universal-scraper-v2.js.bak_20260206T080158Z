@@ -1,0 +1,895 @@
+// universal-scraper-v2.js
+// Config-driven scraper for Berlin housing portals (HTML + JSON + OpenImmo form pagination)
+
+'use strict';
+
+const fs = require('fs');
+const https = require('https');
+const http = require('http');
+const { URL } = require('url');
+const cheerio = require('cheerio');
+
+// -----------------------
+// Transformers
+// -----------------------
+const transformers = {
+  trim: (v) => (v === null || v === undefined) ? '' : String(v).trim(),
+  stripTags: (v) => (v ? String(v).replace(/<[^>]+>/g, '').trim() : ''),
+  parseInt: (v) => {
+    if (v === null || v === undefined || v === '') return null;
+    if (typeof v === 'number') return Number.isFinite(v) ? Math.trunc(v) : null;
+    const m = String(v).match(/-?\d+/);
+    return m ? parseInt(m[0], 10) : null;
+  },
+  arrayFirst: (v) => Array.isArray(v) ? (v[0] ?? null) : v,
+  joinArray: (v) => Array.isArray(v) ? v.filter(Boolean).join(', ') : v,
+  parseFloatDE: (v) => {
+    if (v === null || v === undefined || v === '') return null;
+    const str = String(v).trim();
+
+    // German format: 1.234,56
+    if (str.includes(',') && str.includes('.')) {
+      const cleaned = str.replace(/\./g, '').replace(',', '.');
+      const m = cleaned.match(/-?[\d.]+/);
+      return m ? parseFloat(m[0]) : null;
+    }
+
+    // German: 123,45
+    if (str.includes(',') && !str.includes('.')) {
+      const cleaned = str.replace(',', '.');
+      const m = cleaned.match(/-?[\d.]+/);
+      return m ? parseFloat(m[0]) : null;
+    }
+
+    // English/neutral: 1234.5
+    const m = str.match(/-?[\d.]+/);
+    return m ? parseFloat(m[0]) : null;
+  },
+  extractNumber: (v) => {
+    if (v === null || v === undefined || v === '') return null;
+    const cleaned = String(v).replace(/\./g, '').replace(',', '.');
+    const m = cleaned.match(/-?[\d.]+/);
+    return m ? parseFloat(m[0]) : null;
+  },
+  parsePrice: (v) => {
+    if (v === null || v === undefined || v === '') return null;
+    const str = String(v).trim();
+
+    // 1.234,56
+    if (str.includes(',') && str.includes('.')) {
+      const cleaned = str.replace(/\./g, '').replace(',', '.');
+      const m = cleaned.match(/-?\d+(?:\.\d+)?/);
+      return m ? parseFloat(m[0]) : null;
+    }
+
+    // 1234,56
+    if (str.includes(',') && !str.includes('.')) {
+      const cleaned = str.replace(',', '.');
+      const m = cleaned.match(/-?\d+(?:\.\d+)?/);
+      return m ? parseFloat(m[0]) : null;
+    }
+
+    // 1234.56 or 1234
+    const m = str.match(/-?\d+(?:\.\d+)?/);
+    if (!m) return null;
+    const n = parseFloat(m[0]);
+    if (!Number.isFinite(n)) return null;
+    return n;
+  },
+  absoluteUrl: (v) => v
+};
+
+// -----------------------
+// Helpers
+// -----------------------
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+function safeJsonParse(text, label = 'json') {
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    const prefix = String(text || '').slice(0, 120).replace(/\s+/g, ' ');
+    throw new Error(`JSON parse error (${label}): ${e.message} | body: ${prefix}`);
+  }
+}
+
+function makeKey(apt) {
+  const link = (apt.link || '').toString().trim();
+  if (link) return link;
+  return JSON.stringify([apt.title, apt.price, apt.size, apt.rooms, apt.address, apt.district]);
+}
+
+function pick(obj, path) {
+  if (!path) return undefined;
+  const parts = path.split('.');
+  let cur = obj;
+  for (const p of parts) {
+    if (cur == null) return undefined;
+    cur = cur[p];
+  }
+  return cur;
+}
+
+// -----------------------
+// HTTP client with per-site cookie jar
+// -----------------------
+class SimpleCookieJar {
+  constructor() {
+    this.cookies = new Map(); // name -> value
+  }
+
+  addFromSetCookie(setCookieHeaders = []) {
+    if (!setCookieHeaders) return;
+    const arr = Array.isArray(setCookieHeaders) ? setCookieHeaders : [setCookieHeaders];
+    for (const line of arr) {
+      if (!line) continue;
+      const m = String(line).match(/^\s*([^=;\s]+)=([^;]*)/);
+      if (m) this.cookies.set(m[1], m[2]);
+    }
+  }
+
+  headerValue() {
+    if (this.cookies.size === 0) return '';
+    return [...this.cookies.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
+  }
+}
+
+class HttpClient {
+  constructor({ defaultHeaders = {} } = {}) {
+    this.defaultHeaders = defaultHeaders;
+    this.stats = { requests: 0, errors: 0, startTime: Date.now() };
+  }
+
+  randomUserAgent() {
+    const userAgents = [
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0'
+    ];
+    return userAgents[Math.floor(Math.random() * userAgents.length)];
+  }
+
+  async request(url, {
+    method = 'GET',
+    headers = {},
+    body = null,
+    timeoutMs = 30000,
+    jar = null,
+    followRedirects = true,
+    maxRedirects = 5
+  } = {}) {
+    this.stats.requests++;
+
+    const u = new URL(url);
+    const isHttps = u.protocol === 'https:';
+    const client = isHttps ? https : http;
+
+    const reqHeaders = {
+      'User-Agent': this.randomUserAgent(),
+      'Accept': '*/*',
+      'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8',
+      ...this.defaultHeaders,
+      ...headers
+    };
+
+    if (jar) {
+      const cookie = jar.headerValue();
+      if (cookie) reqHeaders['Cookie'] = cookie;
+    }
+
+    let requestBody = body;
+    if (requestBody != null && typeof requestBody === 'object' && !Buffer.isBuffer(requestBody)) {
+      requestBody = JSON.stringify(requestBody);
+      reqHeaders['Content-Type'] = reqHeaders['Content-Type'] || 'application/json';
+    }
+
+    if (requestBody != null && method.toUpperCase() !== 'GET') {
+      reqHeaders['Content-Length'] = Buffer.byteLength(requestBody);
+    }
+
+    const options = {
+      hostname: u.hostname,
+      port: u.port || (isHttps ? 443 : 80),
+      path: u.pathname + u.search,
+      method,
+      headers: reqHeaders,
+      timeout: timeoutMs
+    };
+
+    const doOnce = (options0) => new Promise((resolve, reject) => {
+      const req = client.request(options0, (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          const buf = Buffer.concat(chunks);
+          if (jar) jar.addFromSetCookie(res.headers['set-cookie']);
+          resolve({
+            status: res.statusCode,
+            statusText: res.statusMessage,
+            headers: res.headers,
+            body: buf,
+            url: `${u.protocol}//${options0.hostname}${options0.path}`
+          });
+        });
+      });
+      req.on('error', (e) => {
+        this.stats.errors++;
+        reject(e);
+      });
+      req.on('timeout', () => {
+        req.destroy(new Error('Request timeout'));
+      });
+      if (requestBody != null && method.toUpperCase() !== 'GET') req.write(requestBody);
+      req.end();
+    });
+
+    let res = await doOnce(options);
+
+    if (followRedirects && [301, 302, 303, 307, 308].includes(res.status) && res.headers.location) {
+      let redirects = 0;
+      let next = new URL(res.headers.location, url).toString();
+
+      while ([301, 302, 303, 307, 308].includes(res.status) && res.headers.location && redirects < maxRedirects) {
+        redirects++;
+        // 303 should switch to GET
+        const nextMethod = (res.status === 303) ? 'GET' : method;
+        const nextBody = (nextMethod === 'GET') ? null : body;
+        res = await this.request(next, { method: nextMethod, headers, body: nextBody, timeoutMs, jar, followRedirects: false });
+        if ([301, 302, 303, 307, 308].includes(res.status) && res.headers.location) {
+          next = new URL(res.headers.location, next).toString();
+        } else {
+          break;
+        }
+      }
+    }
+
+    return res;
+  }
+
+  async fetchHtml(url, opts = {}) {
+    const res = await this.request(url, { ...opts, headers: { 'Accept': 'text/html,application/xhtml+xml', ...(opts.headers || {}) } });
+    const html = res.body.toString('utf-8');
+    if (res.status < 200 || res.status >= 300) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    return { html, finalUrl: res.url, res };
+  }
+
+  async fetchJson(url, opts = {}) {
+    const res = await this.request(url, { ...opts, headers: { 'Accept': 'application/json, text/plain, */*', ...(opts.headers || {}) } });
+    const text = res.body.toString('utf-8');
+    if (res.status < 200 || res.status >= 300) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    return safeJsonParse(text, url);
+  }
+}
+
+// -----------------------
+// Parsers
+// -----------------------
+class BaseParser {
+  constructor(siteId, config, httpClient) {
+    this.siteId = siteId;
+    this.config = config;
+    this.name = config.name || siteId;
+    this.http = httpClient;
+    this.jar = new SimpleCookieJar();
+  }
+
+  transform(value, transformName) {
+    if (!transformName) return value;
+    const fn = transformers[transformName];
+    return fn ? fn(value) : value;
+  }
+
+  normalizeLink(value, baseUrl) {
+    if (!value) return null;
+    const s = String(value).trim();
+    if (!s) return null;
+    if (s.startsWith('http://') || s.startsWith('https://')) return s;
+    try {
+      return new URL(s, baseUrl).toString();
+    } catch {
+      return s;
+    }
+  }
+}
+
+class CssParser extends BaseParser {
+  buildUrl(page) {
+    if (page === 1) return this.config.baseUrl;
+    const pagination = this.config.pagination || '?page={page}';
+    const offset = Number.isFinite(this.config.pageParamOffset) ? this.config.pageParamOffset : 0;
+    const pageValue = page + offset;
+    return this.config.baseUrl + pagination.replace('{page}', String(pageValue));
+  }
+
+  parsePage(html, baseUrl) {
+    const $ = cheerio.load(html);
+    const items = [];
+    const sel = this.config.itemSelector || '.result-item, .listing-item';
+
+    $(sel).each((idx, el) => {
+      try {
+        const $el = $(el);
+        const apt = { source: this.name, siteId: this.siteId };
+
+        for (const [field, fieldCfg] of Object.entries(this.config.fields || {})) {
+          if (!fieldCfg.css) continue;
+          const $f = $el.find(fieldCfg.css);
+          if (!$f.length) continue;
+
+          let value;
+          if (fieldCfg.attr) value = $f.attr(fieldCfg.attr) ?? $f.text();
+          else value = $f.text();
+
+          value = (value === null || value === undefined) ? null : String(value).trim();
+
+          if (value && fieldCfg.regex) {
+            const r = new RegExp(fieldCfg.regex, fieldCfg.regexFlags || '');
+            const m = value.match(r);
+            value = m ? (m[fieldCfg.group || 1] ?? m[0]) : null;
+          }
+
+          let out = this.transform(value, fieldCfg.transform);
+          if (field === 'link') out = this.normalizeLink(out, baseUrl);
+          apt[field] = out;
+        }
+
+        if (!apt.link) {
+          // Try to find any link inside the element
+          const href = $el.find('a[href]').first().attr('href');
+          apt.link = this.normalizeLink(href, baseUrl) || `${baseUrl}#${idx}`;
+        }
+
+        if (apt.rooms || apt.price || apt.size || apt.title || apt.link) items.push(apt);
+      } catch (e) {
+        // ignore per-item
+      }
+    });
+
+    return items;
+  }
+
+  async scrape(maxPagesOverride = null) {
+    const maxPages = maxPagesOverride ?? this.config.maxPages ?? 10;
+    const seen = new Set();
+    const out = [];
+
+    for (let page = 1; page <= maxPages; page++) {
+      const url = this.buildUrl(page);
+      console.log(`📄 ${this.name} - Seite ${page}: ${url}`);
+
+      try {
+        const { html } = await this.http.fetchHtml(url, { headers: this.config.headers || {}, jar: this.jar });
+        const items = this.parsePage(html, url);
+
+        if (items.length === 0) {
+          console.log(`   ℹ️  Keine Wohnungen auf Seite ${page}, stoppe.`);
+          break;
+        }
+
+        const newOnPage = [];
+        for (const apt of items) {
+          const key = makeKey(apt);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          newOnPage.push(apt);
+        }
+
+        if (newOnPage.length === 0) {
+          console.log(`   ℹ️  Keine *neuen* Wohnungen mehr (Pagination-Loop erkannt), stoppe.`);
+          break;
+        }
+
+        out.push(...newOnPage);
+        console.log(`   ✅ ${newOnPage.length} Wohnungen gefunden (${items.length - newOnPage.length} Duplikate verworfen)`);
+
+        // If a page returns fewer items than the expected page size, assume last page.
+        if (this.config.pageSize && items.length < this.config.pageSize) {
+          break;
+        }
+
+        await sleep(this.config.delay ?? 1500);
+      } catch (e) {
+        const msg = e?.message || String(e);
+        if (this.config.stopOn404 && /HTTP\s+404/i.test(msg) && page > 1) {
+          console.log(`   ℹ️  Seite ${page} nicht gefunden (404) – Ende der Pagination.`);
+          break;
+        }
+        console.log(`   ❌ Fehler auf Seite ${page}: ${msg}`);
+        if (page === 1) throw e;
+        break;
+      }
+    }
+
+    return out;
+  }
+}
+
+class RegexParser extends BaseParser {
+  buildUrl(page) {
+    if (page === 1) return this.config.baseUrl;
+    const pagination = this.config.pagination || '?page={page}';
+    return this.config.baseUrl + pagination.replace('{page}', String(page));
+  }
+
+  parsePage(html, baseUrl) {
+    const apartments = [];
+    const itemPattern = this.config.itemPattern || 'href="([^"]*)"';
+    const regex = new RegExp(itemPattern, 'g');
+
+    let m;
+    while ((m = regex.exec(html)) !== null) {
+      try {
+        const link = this.normalizeLink(m[1], baseUrl);
+        const apt = { source: this.name, siteId: this.siteId, link };
+
+        for (const [field, fieldCfg] of Object.entries(this.config.fields || {})) {
+          if (!fieldCfg.regex) continue;
+          const fieldRegex = new RegExp(fieldCfg.regex, fieldCfg.flags || '');
+          const start = Math.max(0, m.index - 5000);
+          const end = Math.min(html.length, m.index + 5000);
+          const ctx = html.slice(start, end);
+          const mm = ctx.match(fieldRegex);
+          if (!mm) continue;
+          const value = mm[fieldCfg.group || 1] ?? mm[0];
+          apt[field] = this.transform(value, fieldCfg.transform);
+        }
+
+        if (apt.rooms || apt.price || apt.size || apt.title || apt.link) apartments.push(apt);
+      } catch {
+        // ignore
+      }
+    }
+
+    return apartments;
+  }
+
+  async scrape(maxPagesOverride = null) {
+    const maxPages = maxPagesOverride ?? this.config.maxPages ?? 10;
+    const seen = new Set();
+    const out = [];
+
+    for (let page = 1; page <= maxPages; page++) {
+      const url = this.buildUrl(page);
+      console.log(`📄 ${this.name} - Seite ${page}: ${url}`);
+
+      try {
+        const { html } = await this.http.fetchHtml(url, { headers: this.config.headers || {}, jar: this.jar });
+        const items = this.parsePage(html, url);
+        if (items.length === 0) {
+          console.log(`   ℹ️  Keine Wohnungen auf Seite ${page}, stoppe.`);
+          break;
+        }
+
+        const newOnPage = [];
+        for (const apt of items) {
+          const key = makeKey(apt);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          newOnPage.push(apt);
+        }
+
+        if (newOnPage.length === 0) {
+          console.log(`   ℹ️  Keine *neuen* Wohnungen mehr (Pagination-Loop erkannt), stoppe.`);
+          break;
+        }
+
+        out.push(...newOnPage);
+        console.log(`   ✅ ${newOnPage.length} Wohnungen gefunden (${items.length - newOnPage.length} Duplikate verworfen)`);
+        await sleep(this.config.delay ?? 1500);
+      } catch (e) {
+        console.log(`   ❌ Fehler auf Seite ${page}: ${e?.message || String(e)}`);
+        if (page === 1) throw e;
+        break;
+      }
+    }
+
+    return out;
+  }
+}
+
+class ApiParser extends BaseParser {
+  buildUrl(page, district = '') {
+    if (this.config.urlBuilder) return this.config.baseUrl; // not implemented
+    if (!this.config.pagination) return this.config.baseUrl;
+    if (page === 1) return this.config.baseUrl;
+    return this.config.baseUrl + this.config.pagination.replace('{page}', String(page));
+  }
+
+  getPageSize() {
+    if (typeof this.config.pageSize === 'number' && this.config.pageSize > 0) return this.config.pageSize;
+    const body = this.config.body;
+    if (body && typeof body === 'object') {
+      for (const [k, v] of Object.entries(body)) {
+        if (String(k).toLowerCase().includes('limit')) {
+          const n = parseInt(String(v).replace('{page}', '').replace('{district}', ''), 10);
+          if (!Number.isNaN(n) && n > 0) return n;
+        }
+      }
+    }
+    return null;
+  }
+
+  async fetchApi(page, district) {
+    const url = this.buildUrl(page, district);
+
+    // build urlencoded body when configured
+    let body = null;
+    if (this.config.body) {
+      if (typeof this.config.body === 'object') {
+        const pairs = [];
+        for (const [k, v0] of Object.entries(this.config.body)) {
+          const values = Array.isArray(v0) ? v0 : [v0];
+          for (let v of values) {
+            if (typeof v === 'string') {
+              if (v.includes('{district}') && !district) continue;
+              v = v.replace('{page}', String(page)).replace('{district}', String(district || ''));
+            }
+            if (v === undefined || v === null) v = '';
+            pairs.push([k, String(v)]);
+          }
+        }
+        body = pairs.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&');
+      } else {
+        body = String(this.config.body)
+          .replace('{page}', String(page))
+          .replace('{district}', String(district || ''));
+      }
+    }
+
+    const method = (this.config.method || 'GET').toUpperCase();
+
+    const res = await this.http.request(url, {
+      method,
+      headers: {
+        'Content-Type': this.config.contentType || 'application/x-www-form-urlencoded',
+        'X-Requested-With': 'XMLHttpRequest',
+        ...(this.config.headers || {})
+      },
+      body,
+      jar: this.jar
+    });
+
+    const text = res.body.toString('utf-8');
+    if (res.status < 200 || res.status >= 300) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    return safeJsonParse(text, url);
+  }
+
+  parseJson(json, baseUrl) {
+    const itemsPath = this.config.itemsPath || 'immoobjects';
+    const arr = pick(json, itemsPath) || [];
+    if (!Array.isArray(arr)) return [];
+
+    const out = [];
+    for (let i = 0; i < arr.length; i++) {
+      const item = arr[i];
+      const apt = { source: this.name, siteId: this.siteId };
+
+      for (const [field, fieldCfg] of Object.entries(this.config.fields || {})) {
+        if (!fieldCfg.path) continue;
+        let value = pick(item, fieldCfg.path);
+
+        if (value != null && fieldCfg.regex) {
+          const r = new RegExp(fieldCfg.regex, fieldCfg.regexFlags || '');
+          const m = String(value).match(r);
+          value = m ? (m[fieldCfg.group || 1] ?? m[0]) : null;
+        }
+
+        value = this.transform(value, fieldCfg.transform);
+        if (field === 'link') value = this.normalizeLink(value, baseUrl);
+        apt[field] = value;
+      }
+
+      if (!apt.link && this.config.linkPrefix && apt.id) {
+        apt.link = this.normalizeLink(`${this.config.linkPrefix}${apt.id}`, baseUrl);
+      }
+
+      if (apt.rooms || apt.price || apt.size || apt.title || apt.link) out.push(apt);
+    }
+
+    return out;
+  }
+
+  async scrape(maxPagesOverride = null) {
+    const maxPages = maxPagesOverride ?? this.config.maxPages ?? 10;
+    const districts = this.config.districts || [''];
+    const pageSize = this.getPageSize();
+
+    const seen = new Set();
+    const out = [];
+
+    for (const district of districts) {
+      console.log(`🌐 ${this.name} - Bezirk: ${district || 'Alle'}`);
+
+      for (let page = 1; page <= maxPages; page++) {
+        try {
+          console.log(`   📄 Seite ${page}`);
+          const json = await this.fetchApi(page, district);
+          const raw = this.parseJson(json, this.config.baseUrl);
+
+          if (raw.length === 0) {
+            console.log(`      ℹ️  Keine Wohnungen, stoppe.`);
+            break;
+          }
+
+          const newOnPage = [];
+          for (const apt of raw) {
+            const key = makeKey(apt);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            newOnPage.push(apt);
+          }
+
+          if (newOnPage.length === 0) {
+            console.log(`      ℹ️  Keine *neuen* Wohnungen (Duplikate), stoppe.`);
+            break;
+          }
+
+          out.push(...newOnPage);
+          console.log(`      ✅ ${newOnPage.length} Wohnungen gefunden (${raw.length - newOnPage.length} Duplikate verworfen)`);
+
+          if (pageSize && raw.length < pageSize) break;
+          await sleep(this.config.delay ?? 1000);
+        } catch (e) {
+          console.log(`      ❌ Fehler auf Seite ${page}: ${e?.message || String(e)}`);
+          if (page === 1) break;
+          break;
+        }
+      }
+
+      await sleep(500);
+    }
+
+    return out;
+  }
+}
+
+// OpenImmo (TYPO3) pagination: submit the search form (POST) then follow redirect with GET.
+class OpenImmoFormParser extends CssParser {
+  async getFormSeed() {
+    const { html } = await this.http.fetchHtml(this.config.baseUrl, { headers: this.config.headers || {}, jar: this.jar });
+
+    const $ = cheerio.load(html);
+    const $form = $('form#openimmo-search-form');
+    if (!$form.length) throw new Error('OpenImmo form not found (#openimmo-search-form)');
+
+    const action = ($form.attr('action') || this.config.baseUrl).split('#')[0];
+    const postUrl = new URL(action, this.config.baseUrl).toString();
+
+    // Collect ALL form controls with their default/current values.
+    // IMPORTANT: OpenImmo/TYPO3 pagination often requires sending the whole state
+    // (select defaults, hidden fields, etc.), otherwise page resets to 1.
+    const pairs = [];
+
+    // inputs
+    $form.find('input[name]').each((_, el) => {
+      const $el = $(el);
+      const name = $el.attr('name');
+      if (!name) return;
+
+      const type = ($el.attr('type') || '').toLowerCase();
+      if (type === 'checkbox' || type === 'radio') {
+        if ($el.is(':checked')) pairs.push([name, $el.attr('value') ?? 'on']);
+        return;
+      }
+
+      pairs.push([name, $el.attr('value') ?? '']);
+    });
+
+    // selects
+    $form.find('select[name]').each((_, el) => {
+      const $el = $(el);
+      const name = $el.attr('name');
+      if (!name) return;
+
+      const $selected = $el.find('option[selected]');
+      if ($selected.length) {
+        $selected.each((_, opt) => pairs.push([name, $(opt).attr('value') ?? $(opt).text()]));
+        return;
+      }
+
+      // fallback: first option's value
+      const $first = $el.find('option').first();
+      if ($first.length) pairs.push([name, $first.attr('value') ?? $first.text()]);
+      else pairs.push([name, '']);
+    });
+
+    // textareas
+    $form.find('textarea[name]').each((_, el) => {
+      const $el = $(el);
+      const name = $el.attr('name');
+      if (!name) return;
+      pairs.push([name, $el.text() ?? '']);
+    });
+
+    return { postUrl, pairs };
+  }
+
+  async fetchPageFor(page, seed) {
+    const pairs = [...(seed.pairs || [])];
+
+    // overwrite/add pagination fields (ensure they appear after possible existing ones)
+    pairs.push(['tx_openimmo_immobilie[search]', 'paginate']);
+    pairs.push(['tx_openimmo_immobilie[page]', String(page)]);
+
+    const body = pairs
+      .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v ?? '')}`)
+      .join('&');
+
+    // POST (expect 308 redirect) => then GET redirect target with cookies
+    const res = await this.http.request(seed.postUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        ...(this.config.headers || {}),
+        'Referer': this.config.baseUrl
+      },
+      body,
+      jar: this.jar,
+      followRedirects: false
+    });
+
+    if ([301, 302, 303, 307, 308].includes(res.status) && res.headers.location) {
+      const loc = new URL(res.headers.location, seed.postUrl).toString();
+      return this.http.fetchHtml(loc, { headers: { ...(this.config.headers || {}), 'Referer': this.config.baseUrl }, jar: this.jar });
+    }
+
+    // Some environments might return 200 directly
+    if (res.status >= 200 && res.status < 300) {
+      return { html: res.body.toString('utf-8'), finalUrl: seed.postUrl, res };
+    }
+
+    throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+  }
+
+  async scrape(maxPagesOverride = null) {
+    const maxPages = maxPagesOverride ?? this.config.maxPages ?? 20;
+    const seen = new Set();
+    const out = [];
+
+    const seed = await this.getFormSeed();
+
+    for (let page = 1; page <= maxPages; page++) {
+      console.log(`📄 ${this.name} - Seite ${page} (OpenImmo Form)`);
+
+      try {
+        const { html } = await this.fetchPageFor(page, seed);
+        const items = this.parsePage(html, this.config.baseUrl);
+
+        if (items.length === 0) {
+          console.log(`   ℹ️  Keine Wohnungen auf Seite ${page}, stoppe.`);
+          break;
+        }
+
+        const newOnPage = [];
+        for (const apt of items) {
+          const key = makeKey(apt);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          newOnPage.push(apt);
+        }
+
+        if (newOnPage.length === 0) {
+          console.log(`   ℹ️  Keine *neuen* Wohnungen mehr (Pagination-Loop erkannt), stoppe.`);
+          break;
+        }
+
+        out.push(...newOnPage);
+        console.log(`   ✅ ${newOnPage.length} Wohnungen gefunden (${items.length - newOnPage.length} Duplikate verworfen)`);
+
+        await sleep(this.config.delay ?? 1200);
+      } catch (e) {
+        console.log(`   ❌ Fehler auf Seite ${page}: ${e?.message || String(e)}`);
+        if (page === 1) throw e;
+        break;
+      }
+    }
+
+    return out;
+  }
+}
+
+class ParserFactory {
+  static create(siteId, config, httpClient) {
+    const t = (config.type || 'css').toLowerCase();
+    if (t === 'css') return new CssParser(siteId, config, httpClient);
+    if (t === 'regex') return new RegexParser(siteId, config, httpClient);
+    if (t === 'api') return new ApiParser(siteId, config, httpClient);
+    if (t === 'openimmo-form' || t === 'openimmo') return new OpenImmoFormParser(siteId, config, httpClient);
+    throw new Error(`Unknown parser type: ${config.type}`);
+  }
+}
+
+// -----------------------
+// Main scraper
+// -----------------------
+class UniversalScraperV2 {
+  constructor(configPath = '/home/node/openclaw/sites-config.json') {
+    this.configPath = configPath;
+    this.outputDir = '/home/node/.openclaw';
+
+    if (!fs.existsSync(this.outputDir)) fs.mkdirSync(this.outputDir, { recursive: true });
+
+    this.http = new HttpClient();
+    this.config = this.loadConfig();
+  }
+
+  loadConfig() {
+    const raw = fs.readFileSync(this.configPath, 'utf-8');
+    return JSON.parse(raw);
+  }
+
+  getSites(siteIds = null) {
+    const all = this.config || {};
+
+    let entries = Object.entries(all);
+    entries = entries.filter(([, cfg]) => cfg && (cfg.enabled !== false));
+
+    if (Array.isArray(siteIds) && siteIds.length) {
+      const set = new Set(siteIds);
+      entries = entries.filter(([id]) => set.has(id));
+    }
+
+    // priority asc, then id
+    entries.sort((a, b) => (a[1].priority ?? 999) - (b[1].priority ?? 999) || a[0].localeCompare(b[0]));
+    return entries;
+  }
+
+  async scrape(siteIds = null, maxPagesOverride = null) {
+    const sites = this.getSites(siteIds);
+    const results = [];
+
+    for (const [siteId, cfg] of sites) {
+      console.log(`\n============================`);
+      console.log(`🏢 Starte: ${cfg.name || siteId} (${siteId})`);
+      console.log(`============================`);
+
+      try {
+        const parser = ParserFactory.create(siteId, cfg, this.http);
+        const items = await parser.scrape(maxPagesOverride);
+        results.push(...items);
+      } catch (e) {
+        console.log(`❌ Site fehlgeschlagen (${siteId}): ${e?.message || String(e)}`);
+      }
+    }
+
+    const outPath = `${this.outputDir}/wohnungen-results-v2.json`;
+    fs.writeFileSync(outPath, JSON.stringify({
+      generatedAt: new Date().toISOString(),
+      count: results.length,
+      results
+    }, null, 2));
+
+    console.log(`\n✅ Fertig. Total: ${results.length} | Output: ${outPath}`);
+    return results;
+  }
+}
+
+// CLI
+if (require.main === module) {
+  const args = process.argv.slice(2);
+  const siteIds = [];
+  let maxPages = null;
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--sites' && args[i + 1]) {
+      siteIds.push(...args[i + 1].split(',').map(s => s.trim()).filter(Boolean));
+      i++;
+    } else if ((args[i] === '--max-pages' || args[i] === '--maxPages') && args[i + 1]) {
+      maxPages = parseInt(args[i + 1], 10);
+      i++;
+    }
+  }
+
+  const scraper = new UniversalScraperV2();
+  scraper.scrape(siteIds.length ? siteIds : null, maxPages)
+    .then(() => process.exit(0))
+    .catch((e) => {
+      console.error('❌ Kritischer Fehler:', e);
+      process.exit(1);
+    });
+}
+
+module.exports = UniversalScraperV2;

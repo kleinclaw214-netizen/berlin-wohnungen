@@ -1,0 +1,15 @@
+{
+  "smtp": {
+    "user": "kleinclaw214@gmail.com",
+    "password": "",
+    "host": "smtp.gmail.com",
+    "port": 587,
+    "secure": false
+  },
+  "notifications": {
+    "enabled": false,
+    "recipients": ["reham.iesa@outlook.de"],
+    "profile": "reham",
+    "maxApartmentsPerEmail": 10
+  }
+}

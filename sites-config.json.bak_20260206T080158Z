@@ -1,0 +1,105 @@
+{
+  "degewo": {
+    "name": "DEGEWO",
+    "baseUrl": "https://www.degewo.de/immosuche",
+    "pagination": "?tx_openimmo_immobilie%5Bpage%5D={page}&tx_openimmo_immobilie%5Bsearch%5D=paginate",
+    "type": "css",
+    "enabled": true,
+    "priority": 1,
+    "delay": 1200,
+    "maxPages": 20,
+    "itemSelector": ".article-list__item",
+    "pageSize": 10,
+    "fields": {
+      "title": { "css": ".article__title", "transform": "trim" },
+      "rooms": {
+        "css": ".article__properties-item:has(.text:contains('Zimmer')) .text",
+        "regex": "(\\d+)\\s*Zimmer",
+        "transform": "parseInt"
+      },
+      "size": {
+        "css": ".article__properties-item:has(.text:contains('m²')) .text",
+        "regex": "(\\d+[.,]\\d+)\\s*m²",
+        "transform": "parseFloatDE"
+      },
+      "price": {
+        "css": ".article__price-tag .price",
+        "regex": "([\\d.,]+)\\s*€",
+        "transform": "parsePrice"
+      },
+      "address": {
+        "css": ".article__meta",
+        "regex": "([^|]+)\\s*\\|\\s*([^\\n]+)",
+        "group": 1,
+        "transform": "trim"
+      },
+      "district": {
+        "css": ".article__meta",
+        "regex": "([^|]+)\\s*\\|\\s*([^\\n]+)",
+        "group": 2,
+        "transform": "trim"
+      },
+      "link": {
+        "css": "a[href*='/immosuche/details/']",
+        "attr": "href",
+        "transform": "absoluteUrl"
+      }
+    }
+  },
+  "gewobag": {
+    "name": "GEWOBAG",
+    "baseUrl": "https://www.gewobag.de/fuer-mietinteressentinnen/suche/wohnung/?gesamtmiete_von&gesamtmiete_bis&gesamtflaeche_von&gesamtflaeche_bis&zimmer_von&zimmer_bis&sort-by",
+    "pagination": "&paged={page}",
+    "type": "css",
+    "enabled": true,
+    "priority": 2,
+    "delay": 1500,
+    "maxPages": 10,
+    "stopOn404": true,
+    "headers": {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    },
+    "itemSelector": "article.angebot-big-box",
+    "fields": {
+      "title": { "css": "h3.angebot-title", "transform": "trim" },
+      "rooms": { "css": "tr.angebot-area td", "regex": "(\\d+)\\s+Zimmer", "transform": "parseInt" },
+      "size": { "css": "tr.angebot-area td", "regex": "(\\d+[.,]?\\d*)\\s*m²", "transform": "parseFloatDE" },
+      "price": { "css": "tr.angebot-kosten td", "regex": "ab\\s*([\\d.,]+)", "transform": "parsePrice" },
+      "district": { "css": "tr.angebot-region td", "transform": "trim" },
+      "address": { "css": "tr.angebot-address address", "transform": "trim" },
+      "available": { "css": "tr.availability td", "transform": "trim" },
+      "link": { "css": ".angebot-footer a", "attr": "href", "transform": "absoluteUrl" }
+    }
+  },
+  "howoge": {
+    "name": "HOWOGE",
+    "baseUrl": "https://www.howoge.de/?type=999&tx_howrealestate_json_list[action]=immoList",
+    "type": "api",
+    "enabled": true,
+    "priority": 3,
+    "delay": 2000,
+    "maxPages": 5,
+    "method": "POST",
+    "contentType": "application/x-www-form-urlencoded",
+    "body": {
+      "tx_howrealestate_json_list[page]": "{page}",
+      "tx_howrealestate_json_list[limit]": "200",
+      "tx_howrealestate_json_list[lang]": "de",
+      "tx_howrealestate_json_list[kiez][]": "{district}",
+      "tx_howrealestate_json_list[rooms]": "",
+      "tx_howrealestate_json_list[wbs]": ""
+    },
+    "districts": [""],
+    "pageSize": 200,
+    "itemsPath": "immoobjects",
+    "fields": {
+      "title": { "path": "title", "transform": "trim" },
+      "rooms": { "path": "rooms", "transform": "parseInt" },
+      "size": { "path": "livingSpace", "transform": "extractNumber" },
+      "price": { "path": "rentTotal", "transform": "parsePrice" },
+      "address": { "path": "street", "transform": "trim" },
+      "district": { "path": "area", "transform": "trim" },
+      "link": { "path": "url", "transform": "trim" }
+    }
+  }
+}

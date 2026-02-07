@@ -1,0 +1,42 @@
+{
+  "profiles": {
+    "reham": {
+      "name": "Reham's Suche",
+      "minRooms": 3,
+      "maxRooms": 3,
+      "maxPrice": 1050,
+      "includeDistricts": [
+        "Neukölln",
+        "Tempelhof",
+        "Schöneberg",
+        "Kreuzberg",
+        "Wedding",
+        "Moabit",
+        "Mitte",
+        "Friedrichshain",
+        "Prenzlauer Berg",
+        "Charlottenburg",
+        "Wilmersdorf",
+        "Reinickendorf",
+        "Spandau",
+        "Steglitz",
+        "Zehlendorf",
+        "Treptow",
+        "Köpenick",
+        "Lichtenberg",
+        "Pankow",
+        "Marzahn",
+        "Hellersdorf"
+      ]
+    },
+    "budget": {
+      "name": "Budget",
+      "maxPrice": 500
+    },
+    "family": {
+      "name": "Familie",
+      "minRooms": 3,
+      "minSize": 70
+    }
+  }
+}

@@ -1,0 +1,66 @@
+{
+  "watchlist": [
+    {
+      "symbol": "AAPL",
+      "name": "Apple Inc.",
+      "type": "stock",
+      "exchange": "NASDAQ",
+      "alerts": [
+        {
+          "type": "price_above",
+          "threshold": 200.0,
+          "message": "AAPL über 200$"
+        },
+        {
+          "type": "daily_change_percent",
+          "threshold": 5.0,
+          "message": "AAPL tägliche Veränderung >5%"
+        }
+      ]
+    },
+    {
+      "symbol": "BTC-USD",
+      "name": "Bitcoin",
+      "type": "crypto",
+      "source": "Yahoo Finance",
+      "alerts": [
+        {
+          "type": "price_below",
+          "threshold": 50000.0,
+          "message": "BTC unter 50.000$"
+        }
+      ]
+    }
+  ],
+  "dataSources": {
+    "yahooFinance": {
+      "enabled": true,
+      "baseUrl": "https://query1.finance.yahoo.com/v8/finance/chart/",
+      "interval": "1h"
+    },
+    "coinGecko": {
+      "enabled": false,
+      "apiKey": "",
+      "baseUrl": "https://api.coingecko.com/api/v3"
+    },
+    "newsApi": {
+      "enabled": false,
+      "apiKey": "",
+      "keywords": ["interest rate", "inflation", "earnings"]
+    }
+  },
+  "notifications": {
+    "telegram": {
+      "enabled": true,
+      "chatId": "957563763"
+    },
+    "email": {
+      "enabled": false,
+      "address": ""
+    }
+  },
+  "schedule": {
+    "dataRefresh": "0 * * * *",
+    "analysis": "0 18 * * 5"
+  }
+}
