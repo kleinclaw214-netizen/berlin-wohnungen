@@ -23,6 +23,8 @@ const BACKUP_PATTERNS = [
   'HEARTBEAT.md',
   'MEMORY.md',
   'RESTORE.md',
+  'STARTUP.sh',
+  'SYSTEM-README.md',
   'backup-to-github.js',
   'memory/*.md',
 ];
